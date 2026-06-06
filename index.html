@@ -1,0 +1,1728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>你所选的</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;600;900&display=swap" rel="stylesheet">
+<style>*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --bg: #080808;
+  --fg: #d4d4d4;
+  --fg-dim: #666;
+  --gold: #c8a84e;
+  --cold: #4a6fa5;
+  --red: #c41e3a;
+  --font: 'Noto Serif SC', serif;
+}
+
+html, body {
+  width:100%; height:100%; overflow:hidden;
+  background:var(--bg);
+  font-family:var(--font);
+  color:var(--fg);
+  user-select:none; -webkit-user-select:none;
+  touch-action:none;
+  cursor:default;
+}
+
+#bg-canvas {
+  position:fixed; top:0; left:0; width:100%; height:100%; z-index:0;
+}
+
+#scene-canvas {
+  position:fixed; top:0; left:0; width:100%; height:100%; z-index:1;
+}
+
+#ui-layer {
+  position:fixed; top:0; left:0; width:100%; height:100%; z-index:2;
+  pointer-events:none;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  overflow-y:auto;
+}
+
+#transition-overlay {
+  position:fixed; top:0; left:0; width:100%; height:100%; z-index:10;
+  pointer-events:none; opacity:0; background:var(--bg);
+}
+
+.choice-btn {
+  pointer-events:auto;
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.2);
+  color:rgba(255,255,255,0.8);
+  font-family:var(--font);
+  font-size:1.1rem;
+  padding:14px 36px;
+  margin:10px 0;
+  cursor:pointer;
+  transition:all 0.4s;
+  letter-spacing:0.05em;
+}
+
+.choice-btn:hover {
+  border-color:rgba(255,255,255,0.6);
+  color:#fff;
+  background:rgba(255,255,255,0.05);
+}
+
+.end-text {
+  font-family:var(--font);
+  font-size:1.3rem;
+  color:rgba(255,255,255,0.8);
+  text-align:center;
+  line-height:2;
+  max-width:480px;
+  animation:fadeUp 3s ease-out;
+}
+
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(20px); }
+  to { opacity:1; transform:translateY(0); }
+}
+</style>
+</head>
+<body>
+<canvas id="bg-canvas"></canvas>
+<canvas id="scene-canvas"></canvas>
+<div id="ui-layer"></div>
+<div id="transition-overlay"></div>
+<script>function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function easeOutExpo(t) {
+  return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+}
+
+function easeOutQuad(t) {
+  return 1 - (1 - t) * (1 - t);
+}
+
+function easeInOutSine(t) {
+  return -(Math.cos(Math.PI * t) - 1) / 2;
+}
+
+function easeOutBack(t) {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function mapRange(v, inMin, inMax, outMin, outMax) {
+  return outMin + ((v - inMin) / (inMax - inMin)) * (outMax - outMin);
+}
+
+
+
+const canvas = document.getElementById('bg-canvas');
+const ctx = canvas.getContext('2d');
+
+const sceneCanvas = document.getElementById('scene-canvas');
+const sceneCtx = sceneCanvas.getContext('2d');
+
+let particles = [];
+let animFrame = null;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  sceneCanvas.width = window.innerWidth;
+  sceneCanvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function getCanvas() { return canvas; }
+function getCtx() { return ctx; }
+function getSceneCanvas() { return sceneCanvas; }
+function getSceneCtx() { return sceneCtx; }
+
+class Particle {
+  constructor(x, y, opts = {}) {
+    this.x = x;
+    this.y = y;
+    this.vx = opts.vx ?? (Math.random() - 0.5) * 2;
+    this.vy = opts.vy ?? (Math.random() - 0.5) * 2;
+    this.life = opts.life ?? 1;
+    this.decay = opts.decay ?? 0.003 + Math.random() * 0.008;
+    this.size = opts.size ?? 1 + Math.random() * 3;
+    this.color = opts.color ?? '255,255,255';
+    this.wobble = Math.random() * Math.PI * 2;
+    this.wobbleSpeed = (Math.random() - 0.5) * 0.02;
+  }
+
+  update() {
+    this.wobble += this.wobbleSpeed;
+    this.vx += Math.sin(this.wobble) * 0.02;
+    this.vy += Math.cos(this.wobble) * 0.02;
+    this.vx *= 0.995;
+    this.vy *= 0.995;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life -= this.decay;
+    return this.life > 0;
+  }
+
+  draw(ctx) {
+    const alpha = clamp(this.life, 0, 1);
+    ctx.fillStyle = `rgba(${this.color},${alpha * 0.6})`;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * alpha, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function spawnBurst(x, y, count = 40, opts = {}) {
+  const burst = [];
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
+    const speed = opts.speed ?? (1 + Math.random() * 4);
+    burst.push(new Particle(x, y, {
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: opts.life ?? 1,
+      decay: opts.decay ?? 0.005 + Math.random() * 0.015,
+      size: opts.size ?? 1 + Math.random() * 4,
+      color: opts.color ?? '255,255,255',
+    }));
+  }
+  particles.push(...burst);
+}
+
+function spawnDrift(count = 3, opts = {}) {
+  const w = canvas.width, h = canvas.height;
+  for (let i = 0; i < count; i++) {
+    particles.push(new Particle(
+      Math.random() * w,
+      Math.random() * h,
+      {
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3 - 0.2,
+        life: opts.life ?? 1,
+        decay: opts.decay ?? 0.0005 + Math.random() * 0.002,
+        size: opts.size ?? 0.5 + Math.random() * 2,
+        color: opts.color ?? '180,180,180',
+      }
+    ));
+  }
+}
+
+function clearAllParticles() {
+  particles = [];
+}
+
+function startParticleLoop() {
+  function loop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const alive = particles[i].update();
+      if (alive) {
+        particles[i].draw(ctx);
+      } else {
+        particles.splice(i, 1);
+      }
+    }
+
+    animFrame = requestAnimationFrame(loop);
+  }
+  if (!animFrame) loop();
+}
+
+function stopParticleLoop() {
+  if (animFrame) {
+    cancelAnimationFrame(animFrame);
+    animFrame = null;
+  }
+}
+
+let ctx = null;
+let masterGain = null;
+let ambientOsc = null;
+let ambientGain = null;
+
+function initAudio() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = ctx.createGain();
+  masterGain.gain.value = 0.3;
+  masterGain.connect(ctx.destination);
+}
+
+function ensureAudio() {
+  if (!ctx) initAudio();
+  if (ctx.state === 'suspended') ctx.resume();
+}
+
+function playTone(freq = 220, duration = 2, type = 'sine', vol = 0.08) {
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.3);
+  gain.gain.linearRampToValueAtTime(0, ctx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + duration);
+}
+
+const overtones = [261.63, 329.63, 392, 523.25, 659.25];
+let overtoneInterval = null;
+
+function startAmbientOvertone(intensity = 0.3) {
+  if (!ctx || overtoneInterval) return;
+  let active = 0;
+  overtoneInterval = setInterval(() => {
+    if (active < 2) {
+      const f = overtones[Math.floor(Math.random() * overtones.length)];
+      const pan = (Math.random() - 0.5) * 0.3;
+      playTone(f, 3 + Math.random() * 4, 'sine', 0.02 * intensity);
+    }
+  }, 2000 + Math.random() * 3000);
+}
+
+function stopAmbientOvertone() {
+  if (overtoneInterval) {
+    clearInterval(overtoneInterval);
+    overtoneInterval = null;
+  }
+}
+
+function setAmbientIntensity(v) {
+  // future use
+}
+
+function playGrain(freq = 400, dur = 0.1, vol = 0.03) {
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.value = freq + (Math.random() - 0.5) * 100;
+  gain.gain.setValueAtTime(vol, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ctx.currentTime + dur);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + dur);
+}
+
+// 三毒迷宫：贪(greed) 嗔(aversion) 痴(delusion)
+// 预选 → 第一轮 → 第二论 → 结局对比
+
+const state = {
+  preChoices: {},    // roomId → choiceKey (what player CLAIMED they'd pick)
+  round1: {},        // roomId → choiceKey (first playthrough)
+  round2: {},        // roomId → choiceKey (second playthrough)
+  currentRound: 0,   // 0=pre-choice, 1=first round, 2=second round
+  currentRoom: 1,
+};
+
+// choice → poison mapping
+const poisonLabels = {
+  grasp:  { name: '贪', hint: '想要' },
+  avoid:  { name: '嗔', hint: '排斥' },
+  delude: { name: '痴', hint: '看不清' },
+};
+
+// Room definitions: 3 choices each, with poison type
+const rooms = {
+  1: {
+    title: '两扇门',
+    choices: {
+      circle:   { label: '圆光', poison: 'grasp' },
+      triangle: { label: '三角光', poison: 'avoid' },
+      still:    { label: '不动', poison: 'delude' },
+    },
+  },
+  2: {
+    title: '镜厅',
+    choices: {
+      follow: { label: '跟随镜中', poison: 'grasp' },
+      oppose: { label: '向相反方向走', poison: 'avoid' },
+      still2: { label: '不动', poison: 'delude' },
+    },
+  },
+  3: {
+    title: '渊面',
+    choices: {
+      walk_around: { label: '绕过深渊', poison: 'grasp' },
+      jump:        { label: '跳下去', poison: 'avoid' },
+      still3:      { label: '不动', poison: 'delude' },
+    },
+  },
+  4: {
+    title: '歧路',
+    choices: {
+      circle_path:   { label: '圆形走廊', poison: 'grasp' },
+      triangle_path: { label: '三角走廊', poison: 'avoid' },
+      square_path:   { label: '方形走廊', poison: 'delude' },
+    },
+  },
+  5: {
+    title: '重影',
+    choices: {
+      left:   { label: '左边', poison: 'grasp' },
+      right:  { label: '右边', poison: 'avoid' },
+      still5: { label: '不动', poison: 'delude' },
+    },
+  },
+  6: {
+    title: '出口',
+    choices: {
+      exit:      { label: '走出去', poison: 'grasp' },
+      smash:     { label: '砸碎门', poison: 'avoid' },
+      turn_back: { label: '转身', poison: 'delude' },
+    },
+  },
+};
+
+function getState() { return state; }
+function getPoisonLabels() { return poisonLabels; }
+function getRooms() { return rooms; }
+
+// Pre-choice: player declares what they'd pick
+function setPreChoice(roomId, choiceKey) {
+  state.preChoices[roomId] = choiceKey;
+}
+
+// Record actual choice during playthrough
+function recordChoice(roomId, choiceKey) {
+  if (state.currentRound === 1) {
+    state.round1[roomId] = choiceKey;
+  } else if (state.currentRound === 2) {
+    state.round2[roomId] = choiceKey;
+  }
+}
+
+function getPreChoice(roomId) {
+  return state.preChoices[roomId] || null;
+}
+
+function getRound1Choice(roomId) {
+  return state.round1[roomId] || null;
+}
+
+function startRound1() {
+  state.currentRound = 1;
+  state.currentRoom = 1;
+  state.round1 = {};
+}
+
+function startRound2() {
+  state.currentRound = 2;
+  state.currentRoom = 1;
+  state.round2 = {};
+}
+
+function getNextRoom(roomId) {
+  if (state.currentRound === 1 && roomId === 6) return 'round-end';
+  if (state.currentRound === 2 && roomId === 6) return 'ending';
+  return roomId + 1;
+}
+
+// Build comparison data for the ending
+function getComparison() {
+  const result = [];
+  for (let i = 1; i <= 6; i++) {
+    const pre = state.preChoices[i];
+    const r1 = state.round1[i];
+    const r2 = state.round2[i];
+    result.push({
+      room: i,
+      title: rooms[i].title,
+      pre: pre ? rooms[i].choices[pre].label : '—',
+      round1: r1 ? rooms[i].choices[r1].label : '—',
+      round2: r2 ? rooms[i].choices[r2].label : '—',
+      prePoison: pre ? poisonLabels[rooms[i].choices[pre].poison].name : '',
+      r1Poison: r1 ? poisonLabels[rooms[i].choices[r1].poison].name : '',
+      r2Poison: r2 ? poisonLabels[rooms[i].choices[r2].poison].name : '',
+      changed_pre_r1: pre !== r1,
+      changed_r1_r2: r1 !== r2,
+    });
+  }
+  return result;
+}
+
+
+
+async function showOpening(uiLayer) {
+  const canvas = getSceneCanvas();
+  const ctx = getSceneCtx();
+  const startTime = performance.now();
+  let animFrame;
+
+  ctx.fillStyle = '#080808';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:40px;text-align:center;padding:40px;">
+      <p style="font-size:2.2rem;color:rgba(255,255,255,0.6);letter-spacing:0.25em;">你所选的</p>
+      <p style="font-size:1rem;color:rgba(255,255,255,0.3);line-height:2.2;max-width:360px;">
+        你了解自己在每个关头<br>会做出什么选择吗？
+      </p>
+      <button class="choice-btn" id="start-btn" style="margin-top:20px;">开始</button>
+    </div>
+  `;
+
+  function loop(now) {
+    const elapsed = (now - startTime) / 1000;
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h * 0.35;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.08)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Breathing circle
+    const breathe = Math.sin(now * 0.0015) * 0.2 + 0.5;
+    const r = 60 + Math.sin(now * 0.002) * 10;
+
+    ctx.strokeStyle = `rgba(255,255,255,${breathe * 0.25})`;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Tiny orbiting dot
+    const orbitAngle = now * 0.0008;
+    const dotX = cx + Math.cos(orbitAngle) * (r + 30);
+    const dotY = cy + Math.sin(orbitAngle) * (r + 30);
+    ctx.fillStyle = `rgba(255,255,255,${breathe * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    animFrame = requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+
+  return new Promise(resolve => {
+    document.getElementById('start-btn').addEventListener('click', () => {
+      cancelAnimationFrame(animFrame);
+      resolve();
+    });
+  });
+}
+
+
+
+async function createPreChoice(uiLayer, canvas, ctx) {
+  const rooms = getRooms();
+  const poisons = getPoisonLabels();
+  let selected = {};
+
+  function render() {
+    let html = `
+      <div style="max-width:600px;padding:40px 20px;overflow-y:auto;max-height:90vh;">
+        <p style="text-align:center;font-size:1.1rem;color:rgba(255,255,255,0.5);margin-bottom:30px;">
+          在进入迷宫之前——<br>如果以下每个房间都在你面前，<br>你会选什么？
+        </p>
+    `;
+
+    for (let i = 1; i <= 6; i++) {
+      const room = rooms[i];
+      html += `
+        <div style="margin-bottom:28px;border-left:1px solid rgba(255,255,255,0.1);padding-left:16px;">
+          <p style="font-size:0.9rem;color:rgba(255,255,255,0.4);margin-bottom:8px;">房间 ${i} · ${room.title}</p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      `;
+      for (const [key, choice] of Object.entries(room.choices)) {
+        const p = poisons[choice.poison];
+        const sel = selected[i] === key;
+        html += `
+          <button class="choice-btn pre-choice-btn" data-room="${i}" data-choice="${key}"
+            style="font-size:0.85rem;padding:8px 16px;margin:2px;${sel ? 'border-color:rgba(255,255,255,0.6);background:rgba(255,255,255,0.08);' : ''}">
+            ${choice.label}
+            <span style="font-size:0.7rem;color:rgba(255,255,255,0.3);margin-left:4px;">${p.name}·${p.hint}</span>
+          </button>
+        `;
+      }
+      html += `</div></div>`;
+    }
+
+    const allSelected = Object.keys(selected).length === 6;
+    html += `
+      <div style="text-align:center;margin-top:30px;">
+        <button class="choice-btn" id="confirm-btn"
+          style="${allSelected ? '' : 'opacity:0.3;pointer-events:none;'}">
+          ${allSelected ? '进入迷宫' : `还差 ${6 - Object.keys(selected).length} 个选择`}
+        </button>
+      </div>
+    </div>`;
+
+    uiLayer.innerHTML = html;
+
+    // Bind events
+    uiLayer.querySelectorAll('.pre-choice-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const roomId = parseInt(btn.dataset.room);
+        const choice = btn.dataset.choice;
+        selected[roomId] = choice;
+        setPreChoice(roomId, choice);
+        render();
+      });
+    });
+
+    if (allSelected) {
+      uiLayer.querySelector('#confirm-btn').addEventListener('click', () => {
+        document.dispatchEvent(new CustomEvent('maze-prechoice-done'));
+      });
+    }
+  }
+
+  // Dark background
+  ctx.fillStyle = '#080808';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  render();
+
+  return {
+    destroy() {
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+// Post-process buttons in a room to show pre-choice and round-1 markers
+function markButtons(uiLayer, roomId) {
+  const state = getState();
+  const pre = getPreChoice(roomId);
+  const r1 = getRound1Choice(roomId);
+  const rooms = getRooms();
+  const choices = rooms[roomId]?.choices || {};
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    const key = btn.dataset.choice;
+    if (!key) return;
+
+    // Remove existing markers
+    btn.querySelectorAll('.btn-marker').forEach(m => m.remove());
+
+    if (state.currentRound === 1 && pre === key) {
+      const m = document.createElement('span');
+      m.className = 'btn-marker';
+      m.style.cssText = 'font-size:0.65rem;color:rgba(255,255,255,0.3);margin-left:6px;';
+      m.textContent = '◉ 预定';
+      btn.appendChild(m);
+    }
+
+    if (state.currentRound === 2) {
+      if (pre === key) {
+        const m = document.createElement('span');
+        m.className = 'btn-marker';
+        m.style.cssText = 'font-size:0.65rem;color:rgba(255,255,255,0.25);margin-left:6px;';
+        m.textContent = '◉';
+        btn.appendChild(m);
+      }
+      if (r1 === key) {
+        const m = document.createElement('span');
+        m.className = 'btn-marker';
+        m.style.cssText = 'font-size:0.65rem;color:rgba(200,168,78,0.4);margin-left:4px;';
+        m.textContent = '○ 上次';
+        btn.appendChild(m);
+      }
+    }
+  });
+}
+
+
+
+
+
+
+async function createRoom1(uiLayer, canvas, ctx) {
+  let animFrame;
+  let startTime = performance.now();
+  let selected = false;
+  let warmPulse = 0;
+  let coldPulse = 0;
+  let autoTimer = 0;
+  const AUTO_TIMEOUT = 10; // seconds before auto-selecting "still"
+
+  // Build choice buttons
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:20px;margin-top:20vh;">
+      <p style="font-size:1.2rem;color:rgba(255,255,255,0.5);margin-bottom:20px;">你面前有两道光</p>
+      <button class="choice-btn" data-choice="circle" style="border-color:rgba(200,168,78,0.3);">圆光</button>
+      <button class="choice-btn" data-choice="triangle" style="border-color:rgba(74,111,165,0.3);">三角光</button>
+      <button class="choice-btn" data-choice="still" style="border-color:rgba(255,255,255,0.1);font-size:0.9rem;">不动</button>
+    </div>
+  `;
+
+  function makeChoice(choiceKey) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+    playTone(220, 0.5, 'sine', 0.06);
+    document.dispatchEvent(new CustomEvent('maze-choice', {
+      detail: { roomId: 1, choiceKey }
+    }));
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 1);
+
+  function loop() {
+    const now = performance.now();
+    const elapsed = (now - startTime) / 1000;
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Background trail
+    ctx.fillStyle = 'rgba(8,8,8,0.15)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Warm circle (left)
+    warmPulse = Math.sin(now * 0.003) * 0.3 + 0.7;
+    const warmR = 80 + Math.sin(now * 0.002) * 15;
+    const warmX = cx - 120;
+    const warmY = cy - 40;
+
+    // Warm glow
+    const warmGrad = ctx.createRadialGradient(warmX, warmY, 0, warmX, warmY, warmR * 2);
+    warmGrad.addColorStop(0, `rgba(200,168,78,${0.5 * warmPulse})`);
+    warmGrad.addColorStop(0.5, `rgba(200,168,78,${0.15 * warmPulse})`);
+    warmGrad.addColorStop(1, 'rgba(200,168,78,0)');
+    ctx.fillStyle = warmGrad;
+    ctx.beginPath();
+    ctx.arc(warmX, warmY, warmR * 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Warm circle ring
+    ctx.strokeStyle = `rgba(200,168,78,${0.6 * warmPulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(warmX, warmY, warmR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Cold triangle (right)
+    coldPulse = Math.cos(now * 0.0035) * 0.3 + 0.7;
+    const coldR = 80 + Math.cos(now * 0.0025) * 15;
+    const coldX = cx + 120;
+    const coldY = cy - 40;
+
+    // Cold glow
+    const coldGrad = ctx.createRadialGradient(coldX, coldY, 0, coldX, coldY, coldR * 2);
+    coldGrad.addColorStop(0, `rgba(74,111,165,${0.5 * coldPulse})`);
+    coldGrad.addColorStop(0.5, `rgba(74,111,165,${0.15 * coldPulse})`);
+    coldGrad.addColorStop(1, 'rgba(74,111,165,0)');
+    ctx.fillStyle = coldGrad;
+    ctx.beginPath();
+    ctx.arc(coldX, coldY, coldR * 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cold triangle
+    ctx.strokeStyle = `rgba(74,111,165,${0.6 * coldPulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const angle = (Math.PI * 2 * i) / 3 - Math.PI / 2;
+      const vx = coldX + Math.cos(angle) * coldR;
+      const vy = coldY + Math.sin(angle) * coldR;
+      if (i === 0) ctx.moveTo(vx, vy);
+      else ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Auto-timer: if not selected after AUTO_TIMEOUT seconds, choose "still"
+    if (!selected) {
+      autoTimer += 0.016;
+      if (autoTimer > AUTO_TIMEOUT) {
+        makeChoice('still');
+      }
+    }
+
+    // Ambient particles
+    if (Math.random() < 0.2) {
+      spawnDrift(1, { color: '120,120,120' });
+    }
+
+    if (!selected) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  // Pause previous render
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  loop();
+
+  return {
+    destroy() {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+async function createRoom2(uiLayer, canvas, ctx) {
+  let animFrame;
+  let selected = false;
+  let mirrorX = 0, mirrorY = 0;
+  let realX = 0, realY = 0;
+  let mirrorOffsetX = -80;
+  let mirrorOffsetY = 30;
+
+  const tintColor = '180,180,200';
+
+  function onMouseMove(e) {
+    realX = e.clientX || e.touches?.[0]?.clientX || realX;
+    realY = e.clientY || e.touches?.[0]?.clientY || realY;
+    // Mirror shows a displaced reflection
+    mirrorX = canvas.width - realX + mirrorOffsetX;
+    mirrorY = realY + mirrorOffsetY;
+  }
+
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('touchmove', onMouseMove);
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:20px;margin-top:15vh;">
+      <p style="font-size:1rem;color:rgba(255,255,255,0.4);">镜中的你不在你所在的位置</p>
+      <button class="choice-btn" data-choice="follow">跟随镜中的方向</button>
+      <button class="choice-btn" data-choice="oppose">向镜中相反方向走</button>
+      <button class="choice-btn" data-choice="still2" style="border-color:rgba(255,255,255,0.1);font-size:0.85rem;">不动</button>
+    </div>
+  `;
+
+  function makeChoice(key) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+    playTone(280, 0.4, 'sine', 0.05);
+    document.dispatchEvent(new CustomEvent('maze-choice', {
+      detail: { roomId: 2, choiceKey: key }
+    }));
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 2);
+
+  function loop() {
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.12)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Mirror line down the center
+    ctx.strokeStyle = `rgba(${tintColor},0.3)`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 15]);
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Real cursor (left side)
+    if (realX > 0 && realX < cx) {
+      ctx.fillStyle = `rgba(${tintColor},0.6)`;
+      ctx.beginPath();
+      ctx.arc(realX, realY, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Crosshair
+      ctx.strokeStyle = `rgba(${tintColor},0.4)`;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(realX - 15, realY);
+      ctx.lineTo(realX + 15, realY);
+      ctx.moveTo(realX, realY - 15);
+      ctx.lineTo(realX, realY + 15);
+      ctx.stroke();
+    }
+
+    // Mirror reflection (right side — displaced)
+    if (mirrorX > cx && mirrorX < w) {
+      ctx.fillStyle = `rgba(${tintColor},0.3)`;
+      ctx.beginPath();
+      ctx.arc(mirrorX, mirrorY, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Dashed crosshair
+      ctx.strokeStyle = `rgba(${tintColor},0.2)`;
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath();
+      ctx.moveTo(mirrorX - 15, mirrorY);
+      ctx.lineTo(mirrorX + 15, mirrorY);
+      ctx.moveTo(mirrorX, mirrorY - 15);
+      ctx.lineTo(mirrorX, mirrorY + 15);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Geometric mirror frames
+    for (let i = 0; i < 4; i++) {
+      const mx = cx + (i % 2 === 0 ? -120 : 120);
+      const my = h * 0.25 + Math.floor(i / 2) * h * 0.5;
+      ctx.strokeStyle = `rgba(${tintColor},0.15)`;
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(mx - 70, my - 70, 140, 140);
+    }
+
+    if (Math.random() < 0.15) {
+      spawnDrift(1, { color: '100,100,110' });
+    }
+
+    if (!selected) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  loop();
+
+  return {
+    destroy() {
+      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('touchmove', onMouseMove);
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+async function createRoom3(uiLayer, canvas, ctx) {
+  let animFrame;
+  let selected = false;
+  let jumped = false;
+  let revealPhase = 0; // 0=looks like abyss, 1=revealed as line
+  let shakeAmount = 0;
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:20px;margin-top:15vh;">
+      <p style="font-size:1rem;color:rgba(255,255,255,0.4);">前方是无底深渊</p>
+      <button class="choice-btn" data-choice="jump" style="border-color:rgba(196,30,58,0.3);">跳下去</button>
+      <button class="choice-btn" data-choice="walk_around">绕过深渊</button>
+      <button class="choice-btn" data-choice="still3" style="border-color:rgba(255,255,255,0.1);font-size:0.85rem;">不动</button>
+    </div>
+  `;
+
+  function makeChoice(key) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+
+    if (key === 'jump') {
+      jumped = true;
+      shakeAmount = 1;
+      playTone(60, 0.8, 'square', 0.08);
+      setTimeout(() => {
+        revealPhase = 1;
+        spawnBurst(canvas.width/2, canvas.height * 0.55, 50, { speed: 2, size: 1.5, color: '255,255,200' });
+        playTone(330, 0.5, 'sine', 0.06);
+      }, 800);
+      setTimeout(() => {
+        document.dispatchEvent(new CustomEvent('maze-choice', {
+          detail: { roomId: 3, choiceKey: key }
+        }));
+      }, 2500);
+    } else {
+      document.dispatchEvent(new CustomEvent('maze-choice', {
+        detail: { roomId: 3, choiceKey: key }
+      }));
+    }
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 3);
+
+  function loop() {
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const abyssY = h * 0.55;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.15)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Shake
+    shakeAmount = lerp(shakeAmount, 0, 0.05);
+    const sx = (Math.random() - 0.5) * shakeAmount * 15;
+    const sy = (Math.random() - 0.5) * shakeAmount * 15;
+
+    if (revealPhase < 0.5) {
+      // Draw the "abyss" — a dark chasm with depth illusion
+      const abyssGrad = ctx.createLinearGradient(0, abyssY - 100, 0, abyssY + 200);
+      abyssGrad.addColorStop(0, 'rgba(8,8,8,0)');
+      abyssGrad.addColorStop(0.3, 'rgba(4,4,4,0.9)');
+      abyssGrad.addColorStop(0.5, '#000');
+      abyssGrad.addColorStop(0.7, 'rgba(2,2,2,0.95)');
+      abyssGrad.addColorStop(1, '#000');
+      ctx.fillStyle = abyssGrad;
+      ctx.fillRect(0, abyssY - 100, w, 300);
+
+      // Depth lines — converging to a vanishing point
+      for (let i = 0; i < 20; i++) {
+        const lx = (i / 19) * w;
+        ctx.strokeStyle = 'rgba(20,20,25,0.8)';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(lx + sx, abyssY + sy);
+        ctx.lineTo(cx, abyssY + 250);
+        ctx.stroke();
+      }
+
+      // Fog/mist at the bottom
+      const fogGrad = ctx.createLinearGradient(0, abyssY + 100, 0, abyssY + 250);
+      fogGrad.addColorStop(0, 'rgba(8,8,8,0)');
+      fogGrad.addColorStop(1, 'rgba(4,4,6,0.8)');
+      ctx.fillStyle = fogGrad;
+      ctx.fillRect(0, abyssY + 100, w, 150);
+
+      // The edge line
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, abyssY + sy);
+      ctx.lineTo(w, abyssY + sy);
+      ctx.stroke();
+
+      // Warning text
+      if (!selected) {
+        ctx.font = '12px "Noto Serif SC", serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.fillText('深不见底', cx, abyssY - 30);
+      }
+    } else {
+      // Reveal: it was just a line on the ground
+      const revealAlpha = clamp(revealPhase, 0, 1);
+
+      // Simple line
+      ctx.strokeStyle = `rgba(255,255,255,${0.3 * revealAlpha})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 5]);
+      ctx.beginPath();
+      ctx.moveTo(cx - 200, abyssY);
+      ctx.lineTo(cx + 200, abyssY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Small depth indicator
+      ctx.font = '14px "Noto Serif SC", serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(255,255,255,${0.6 * revealAlpha})`;
+      ctx.fillText('两寸深', cx, abyssY + 40);
+    }
+
+    if (Math.random() < 0.15) {
+      spawnDrift(1, { color: '80,80,90' });
+    }
+
+    if (!selected || jumped) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  loop();
+
+  return {
+    destroy() {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+async function createRoom4(uiLayer, canvas, ctx) {
+  let animFrame;
+  let selected = false;
+  let gazeTarget = null; // which corridor the user is looking at
+  let gazeTimers = { circle: 0, square: 0, triangle: 0 };
+  const corridorWidths = { circle: 100, square: 100, triangle: 100 };
+  let mouseX = canvas.width / 2;
+  let mouseY = canvas.height / 2;
+
+  function onMouseMove(e) {
+    mouseX = e.clientX || e.touches?.[0]?.clientX || mouseX;
+    mouseY = e.clientY || e.touches?.[0]?.clientY || mouseY;
+
+    const w = canvas.width;
+    const third = w / 3;
+    if (mouseX < third) gazeTarget = 'circle';
+    else if (mouseX < third * 2) gazeTarget = 'square';
+    else gazeTarget = 'triangle';
+  }
+
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('touchmove', onMouseMove);
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:15px;margin-top:10vh;">
+      <p style="font-size:1rem;color:rgba(255,255,255,0.4);">三条路，选一条</p>
+      <button class="choice-btn" data-choice="circle_path">圆形走廊</button>
+      <button class="choice-btn" data-choice="square_path">方形走廊</button>
+      <button class="choice-btn" data-choice="triangle_path">三角走廊</button>
+    </div>
+  `;
+
+  function makeChoice(key) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+    playTone(300, 0.4, 'sine', 0.05);
+    document.dispatchEvent(new CustomEvent('maze-choice', {
+      detail: { roomId: 4, choiceKey: key }
+    }));
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 4);
+
+  function loop() {
+    const w = canvas.width;
+    const h = canvas.height;
+    const third = w / 3;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.13)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Update gaze timers — the corridor you stare at narrows
+    for (const key of ['circle', 'square', 'triangle']) {
+      if (gazeTarget === key) {
+        gazeTimers[key] = Math.min(1, gazeTimers[key] + 0.01);
+      } else {
+        gazeTimers[key] = Math.max(0, gazeTimers[key] - 0.005);
+      }
+      // Target width: staring shrinks it
+      const targetWidth = 100 - gazeTimers[key] * 70;
+      corridorWidths[key] = lerp(corridorWidths[key], targetWidth, 0.05);
+    }
+
+    // Draw three corridors
+    const corridorData = [
+      { key: 'circle', x: third * 0.5, shape: 'circle' },
+      { key: 'square', x: third * 1.5, shape: 'square' },
+      { key: 'triangle', x: third * 2.5, shape: 'triangle' },
+    ];
+
+    for (const cd of corridorData) {
+      const w2 = corridorWidths[cd.key] / 2;
+      const isGazed = gazeTarget === cd.key;
+      const alpha = isGazed ? 0.5 : 0.25;
+      const color = `rgba(180,180,190,${alpha})`;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isGazed ? 1.5 : 0.5;
+
+      if (cd.shape === 'circle') {
+        ctx.beginPath();
+        ctx.ellipse(cd.x, h * 0.5, w2, h * 0.3, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (cd.shape === 'square') {
+        ctx.strokeRect(cd.x - w2, h * 0.2, w2 * 2, h * 0.6);
+      } else {
+        ctx.beginPath();
+        const tx = cd.x, ty = h * 0.2;
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(tx + w2, ty + h * 0.6);
+        ctx.lineTo(tx - w2, ty + h * 0.6);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      // Depth lines inside corridor
+      const depthLines = isGazed ? 8 : 3;
+      for (let i = 0; i < depthLines; i++) {
+        const t = (i + 1) / (depthLines + 1);
+        const innerW = w2 * (1 - t * 0.7);
+        ctx.strokeStyle = `rgba(150,150,160,${alpha * 0.6})`;
+        ctx.lineWidth = 0.3;
+        if (cd.shape === 'circle') {
+          ctx.beginPath();
+          ctx.ellipse(cd.x, h * 0.5, innerW, h * 0.3 * (1 - t * 0.7), 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // Label
+      ctx.font = '11px "Noto Serif SC", serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(200,200,200,${alpha})`;
+      const label = cd.shape === 'circle' ? '圆' : cd.shape === 'square' ? '方' : '三角';
+      ctx.fillText(label, cd.x, h * 0.18);
+    }
+
+    if (Math.random() < 0.12) {
+      spawnDrift(1, { color: '110,110,120' });
+    }
+
+    if (!selected) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  loop();
+
+  return {
+    destroy() {
+      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('touchmove', onMouseMove);
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+
+async function createRoom5(uiLayer, canvas, ctx) {
+  let animFrame;
+  let selected = false;
+  // Count pre-choice poisons for bias
+  const state = getState();
+  let graspCount = 0, avoidCount = 0;
+  for (const key of Object.values(state.preChoices || {})) {
+    if (key === 'circle' || key === 'follow' || key === 'walk_around' || key === 'circle_path' || key === 'left' || key === 'exit') graspCount++;
+    if (key === 'triangle' || key === 'oppose' || key === 'jump' || key === 'triangle_path' || key === 'right' || key === 'smash') avoidCount++;
+  }
+  const leftBias = graspCount > avoidCount ? 1.2 : 0.8;
+  const rightBias = avoidCount > graspCount ? 1.2 : 0.8;
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:15px;margin-top:20vh;">
+      <p style="font-size:1rem;color:rgba(255,255,255,0.3);">有两个出口，但它们是重叠的</p>
+      <div style="display:flex;gap:60px;">
+        <button class="choice-btn" data-choice="left" style="width:120px;">左边</button>
+        <button class="choice-btn" data-choice="right" style="width:120px;">右边</button>
+        <button class="choice-btn" data-choice="still5" style="width:120px;border-color:rgba(255,255,255,0.1);font-size:0.85rem;">不动</button>
+      </div>
+    </div>
+  `;
+
+  function makeChoice(key) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+    playTone(350, 0.4, 'sine', 0.05);
+    document.dispatchEvent(new CustomEvent('maze-choice', {
+      detail: { roomId: 5, choiceKey: key }
+    }));
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 5);
+
+  function loop() {
+    const now = performance.now();
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.12)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Double vision: everything drawn twice with offset
+    const offsetX = Math.sin(now * 0.002) * 6;
+    const offsetY = Math.cos(now * 0.0025) * 4;
+
+    // Draw two overlapping geometric "exits"
+    for (const pass of [0, 1]) {
+      const ox = pass === 0 ? -offsetX : offsetX;
+      const oy = pass === 0 ? -offsetY : offsetY;
+      const alpha = pass === 0 ? 0.5 : 0.35;
+      const glowAlpha = pass === 0 ? leftBias * 0.3 : rightBias * 0.3;
+
+      // Portal ring
+      ctx.strokeStyle = `rgba(200,200,210,${alpha})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx + ox - 40, cy + oy, 60, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(200,200,210,${alpha})`;
+      ctx.beginPath();
+      ctx.arc(cx + ox + 40, cy + oy, 60, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Glow inside
+      const glow = ctx.createRadialGradient(cx + ox, cy + oy, 10, cx + ox, cy + oy, 70);
+      glow.addColorStop(0, `rgba(255,255,255,${glowAlpha})`);
+      glow.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy + oy, 70, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Label
+    ctx.font = '13px "Noto Serif SC", serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(200,200,200,0.3)';
+    ctx.fillText('真实的和虚幻的哪一个更亮？', cx, cy + 130);
+
+    if (Math.random() < 0.12) {
+      spawnDrift(1, { color: '130,130,140' });
+    }
+
+    if (!selected) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  loop();
+
+  return {
+    destroy() {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+async function createRoom6(uiLayer, canvas, ctx) {
+  let animFrame;
+  let selected = false;
+  let smashed = false;
+  let smashPhase = 0;
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:20px;margin-top:12vh;">
+      <p style="font-size:1.1rem;color:rgba(255,255,255,0.5);">面前是一扇门，上面写着「出口」</p>
+      <p style="font-size:0.85rem;color:rgba(255,255,255,0.25);">门缝里透出最安详的光</p>
+      <button class="choice-btn" data-choice="exit">走出去</button>
+      <button class="choice-btn" data-choice="smash">砸碎门</button>
+      <button class="choice-btn" data-choice="turn_back" style="border-color:rgba(255,255,255,0.1);font-size:0.9rem;">转身</button>
+    </div>
+  `;
+
+  function makeChoice(key) {
+    if (selected) return;
+    selected = true;
+    ensureAudio();
+
+    if (key === 'smash') {
+      smashed = true;
+      playTone(50, 1, 'square', 0.15);
+      spawnBurst(canvas.width / 2, canvas.height / 2, 120, { speed: 6, life: 1.2, size: 3, color: '255,200,150' });
+      setTimeout(() => {
+        document.dispatchEvent(new CustomEvent('maze-choice', {
+          detail: { roomId: 6, choiceKey: key }
+        }));
+      }, 2000);
+    } else {
+      document.dispatchEvent(new CustomEvent('maze-choice', {
+        detail: { roomId: 6, choiceKey: key }
+      }));
+    }
+  }
+
+  uiLayer.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => makeChoice(btn.dataset.choice));
+  });
+
+  markButtons(uiLayer, 6);
+
+  function loop() {
+    const now = performance.now();
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    ctx.fillStyle = 'rgba(8,8,8,0.15)';
+    ctx.fillRect(0, 0, w, h);
+
+    if (smashed) {
+      // Door shattering
+      smashPhase = clamp(smashPhase + 0.02, 0, 1);
+      // Draw broken door fragments
+      for (let i = 0; i < 20; i++) {
+        const fx = cx + (Math.random() - 0.5) * smashPhase * 300;
+        const fy = cy + (Math.random() - 0.5) * smashPhase * 400;
+        const fr = 5 + Math.random() * 20;
+        const angle = Math.random() * Math.PI * 2;
+        ctx.save();
+        ctx.translate(fx, fy);
+        ctx.rotate(angle);
+        ctx.fillStyle = `rgba(200,180,150,${(1 - smashPhase) * 0.5})`;
+        ctx.fillRect(-fr/2, -fr/4, fr, fr/2);
+        ctx.restore();
+      }
+      // Reveal: same door behind
+      if (smashPhase > 0.7) {
+        ctx.fillStyle = `rgba(255,255,255,${(smashPhase - 0.7) * 3 * 0.1})`;
+        ctx.font = '16px "Noto Serif SC", serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('门后面是同一扇门', cx, cy + 180);
+      }
+    } else {
+      // Beautiful glowing door
+      const glowPulse = Math.sin(now * 0.002) * 0.15 + 0.85;
+
+      // Door frame
+      ctx.strokeStyle = `rgba(200,200,200,0.4)`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(cx - 80, cy - 140, 160, 280);
+
+      // Door panels
+      ctx.fillStyle = 'rgba(30,30,35,0.9)';
+      ctx.fillRect(cx - 75, cy - 135, 72, 270);
+      ctx.fillRect(cx + 3, cy - 135, 72, 270);
+
+      // Light from crack
+      const crackGlow = ctx.createLinearGradient(cx - 3, 0, cx + 3, 0);
+      crackGlow.addColorStop(0, 'rgba(8,8,8,0)');
+      crackGlow.addColorStop(0.5, `rgba(255,240,210,${0.8 * glowPulse})`);
+      crackGlow.addColorStop(1, 'rgba(8,8,8,0)');
+      ctx.fillStyle = crackGlow;
+      ctx.fillRect(cx - 40, cy - 130, 80, 260);
+
+      // Warm halo around door
+      const halo = ctx.createRadialGradient(cx, cy, 50, cx, cy, 250);
+      halo.addColorStop(0, `rgba(255,240,210,${0.1 * glowPulse})`);
+      halo.addColorStop(1, 'rgba(255,240,210,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 250, 0, Math.PI * 2);
+      ctx.fill();
+
+      // "出口" text on door
+      ctx.font = '22px "Noto Serif SC", serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(255,240,210,${0.7 * glowPulse})`;
+      ctx.fillText('出口', cx, cy);
+    }
+
+    if (Math.random() < 0.1) {
+      spawnDrift(1, { color: '140,130,110' });
+    }
+
+    if (!selected || smashed) {
+      animFrame = requestAnimationFrame(loop);
+    }
+  }
+
+  loop();
+
+  return {
+    destroy() {
+      if (animFrame) cancelAnimationFrame(animFrame);
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+async function showRoundEnd(uiLayer, canvas, ctx) {
+  const state = getState();
+  const rooms = getRooms();
+  const poisons = getPoisonLabels();
+
+  let deviations = 0;
+  for (let i = 1; i <= 6; i++) {
+    if (state.preChoices[i] && state.round1[i] && state.preChoices[i] !== state.round1[i]) {
+      deviations++;
+    }
+  }
+
+  ctx.fillStyle = '#080808';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Show the journey
+  let pathHtml = '';
+  for (let i = 1; i <= 6; i++) {
+    const pre = state.preChoices[i];
+    const r1 = state.round1[i];
+    const changed = pre !== r1;
+    const room = rooms[i];
+    const preLabel = pre ? room.choices[pre].label : '—';
+    const r1Label = r1 ? room.choices[r1].label : '—';
+    const prePoison = pre ? poisons[room.choices[pre].poison] : null;
+    const r1Poison = r1 ? poisons[room.choices[r1].poison] : null;
+
+    pathHtml += `
+      <div style="display:flex;align-items:center;gap:10px;font-size:0.85rem;margin-bottom:6px;${changed ? 'color:rgba(200,168,78,0.7);' : 'color:rgba(255,255,255,0.35);'}">
+        <span style="width:60px;text-align:right;">房间${i}</span>
+        <span>${r1Label}${r1Poison ? ` · ${r1Poison.name}` : ''}</span>
+        ${changed ? `<span style="font-size:0.7rem;color:rgba(200,168,78,0.5);">（预定是${preLabel}）</span>` : ''}
+      </div>
+    `;
+  }
+
+  uiLayer.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:16px;text-align:center;padding:40px;max-width:420px;">
+      <p style="font-size:1rem;color:rgba(255,255,255,0.4);">这是你走的路</p>
+      <div style="margin:10px 0;">${pathHtml}</div>
+      <p style="font-size:0.9rem;color:rgba(255,255,255,0.35);margin-top:8px;">
+        ${deviations > 0
+          ? `有 ${deviations} 次，你做了跟预定不一样的选择。`
+          : '你说的和做的一样。'}
+      </p>
+      <div style="display:flex;gap:30px;margin-top:14px;">
+        <button class="choice-btn" id="leave-btn" style="border-color:rgba(255,255,255,0.1);font-size:0.9rem;">离开</button>
+        <button class="choice-btn" id="retry-btn">重走一次</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('retry-btn').addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('maze-round2-start'));
+  });
+
+  document.getElementById('leave-btn').addEventListener('click', () => {
+    uiLayer.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:16px;padding:40px;text-align:center;max-width:400px;">
+        <p style="font-size:1.1rem;color:rgba(255,255,255,0.6);">你没有再走一遍。</p>
+        <p style="font-size:0.95rem;color:rgba(255,255,255,0.35);line-height:2;">
+          你选了你的路，然后离开了。<br>
+          你以为没变过的那些选择——<br>
+          只有你自己知道它们有多牢固。<br>
+          或者你也不知道。
+        </p>
+        <p style="font-size:0.85rem;color:rgba(255,255,255,0.2);margin-top:20px;">你可以关掉这个页面了</p>
+        <button class="choice-btn" id="retry2-btn" style="margin-top:30px;border-color:rgba(255,255,255,0.08);font-size:0.8rem;">……还是重走一次</button>
+      </div>
+    `;
+    document.getElementById('retry2-btn').addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('maze-round2-start'));
+    });
+  });
+
+  return {
+    destroy() {
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+async function showEnding(uiLayer, canvas, ctx) {
+  const data = getComparison();
+  const state = getState();
+
+  const totalChanged = data.filter(d => d.changed_pre_r1 || d.changed_r1_r2).length;
+  const bothChanged = data.filter(d => d.changed_pre_r1 && d.changed_r1_r2).length;
+
+  ctx.fillStyle = '#080808';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let html = `
+    <div style="max-width:560px;padding:30px 20px;overflow-y:auto;max-height:90vh;">
+      <p style="text-align:center;font-size:1.1rem;color:rgba(255,255,255,0.5);margin-bottom:24px;">
+        你宣称的 · 你第一次做的 · 你第二次做的
+      </p>
+      <div style="font-size:0.8rem;color:rgba(255,255,255,0.3);display:flex;justify-content:space-between;padding:0 60px;margin-bottom:8px;">
+        <span>预定</span><span>第一次</span><span>第二次</span>
+      </div>
+  `;
+
+  for (const d of data) {
+    const r1Changed = d.changed_pre_r1;
+    const r2Changed = d.changed_r1_r2;
+    const changeStyle = r2Changed ? 'color:rgba(200,168,78,0.8);' : '';
+
+    html += `
+      <div style="margin-bottom:12px;border-left:2px solid ${r2Changed ? 'rgba(200,168,78,0.3)' : 'rgba(255,255,255,0.08)'};padding-left:12px;">
+        <p style="font-size:0.75rem;color:rgba(255,255,255,0.25);margin-bottom:4px;">房间${d.room} · ${d.title}</p>
+        <p style="font-size:0.85rem;${changeStyle}">
+          ${d.pre} <span style="color:rgba(255,255,255,0.2);">→</span>
+          ${d.round1} <span style="color:rgba(255,255,255,0.2);">→</span>
+          <span style="${r2Changed ? 'color:rgba(200,168,78,0.9);font-weight:bold;' : ''}">${d.round2}</span>
+          ${r2Changed ? '<span style="font-size:0.7rem;color:rgba(200,168,78,0.5);margin-left:6px;">变了</span>' : ''}
+        </p>
+      </div>
+    `;
+  }
+
+  // Final reflection — key: the player CHOSE to replay
+  let finalLine;
+  if (totalChanged === 0) {
+    finalLine = '你走了两遍，选了完全一样的东西。你的坚持是真实的——但迷宫也是真实的。';
+  } else {
+    finalLine = '没有人逼你重来。是你自己选了「再来一次」。\n然后你选了不一样的。\n你自愿推翻了你自愿坚持的东西。';
+  }
+
+  html += `
+      <div style="text-align:center;margin-top:30px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.08);">
+        <p style="font-size:1rem;color:rgba(255,255,255,0.7);line-height:1.8;">${finalLine}</p>
+        <button class="choice-btn" id="restart-btn" style="margin-top:24px;">再走一次</button>
+      </div>
+    </div>
+  `;
+
+  uiLayer.innerHTML = html;
+
+  document.getElementById('restart-btn').addEventListener('click', () => {
+    location.reload();
+  });
+
+  return {
+    destroy() {
+      uiLayer.innerHTML = '';
+    }
+  };
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+const overlay = document.getElementById('transition-overlay');
+const uiLayer = document.getElementById('ui-layer');
+let currentScreen = null;
+
+const roomCreators = { 1: createRoom1, 2: createRoom2, 3: createRoom3, 4: createRoom4, 5: createRoom5, 6: createRoom6 };
+
+async function navigateTo(target) {
+  if (currentScreen && currentScreen.destroy) {
+    currentScreen.destroy();
+    currentScreen = null;
+  }
+  uiLayer.innerHTML = '';
+  const canvas = getSceneCanvas();
+  const ctx = getSceneCtx();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Brief flash transition for room-to-room
+  if (typeof target === 'number' && target > 1) {
+    overlay.style.transition = 'opacity 0.25s';
+    overlay.style.opacity = '1';
+    await sleep(250);
+    overlay.style.transition = 'opacity 0.4s';
+    overlay.style.opacity = '0';
+    await sleep(400);
+  }
+
+  if (target === 'opening') {
+    currentScreen = { destroy() { uiLayer.innerHTML = ''; } };
+    await showOpening(uiLayer);
+    document.dispatchEvent(new CustomEvent('maze-opening-done'));
+    return;
+  }
+  if (target === 'pre-choice') {
+    currentScreen = await createPreChoice(uiLayer, canvas, ctx);
+    return;
+  }
+  if (target === 'round-end') {
+    currentScreen = await showRoundEnd(uiLayer, canvas, ctx);
+    return;
+  }
+  if (target === 'ending') {
+    currentScreen = await showEnding(uiLayer, canvas, ctx);
+    return;
+  }
+
+  const creator = roomCreators[target];
+  if (creator) {
+    currentScreen = await creator(uiLayer, canvas, ctx);
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+
+
+
+
+
+startParticleLoop();
+
+document.addEventListener('click', () => initAudio(), { once: true });
+document.addEventListener('touchstart', () => initAudio(), { once: true });
+
+// Pre-choice done → start round 1
+document.addEventListener('maze-prechoice-done', () => {
+  startRound1();
+  navigateTo(1);
+});
+
+// Room choice made during playthrough
+document.addEventListener('maze-choice', (e) => {
+  const { roomId, choiceKey } = e.detail;
+  recordChoice(roomId, choiceKey);
+  const next = getNextRoom(roomId);
+  navigateTo(next);
+});
+
+// Round 1 ended, start round 2
+document.addEventListener('maze-round2-start', () => {
+  startRound2();
+  navigateTo(1);
+});
+
+// Opening done → go to pre-choice
+document.addEventListener('maze-opening-done', () => {
+  navigateTo('pre-choice');
+});
+
+// Start at opening
+navigateTo('opening');
+
+</script>
+</body>
+</html>
